@@ -1,51 +1,99 @@
-# aif/interactive.py
 from __future__ import annotations
 
-from typing import Optional, Callable, Awaitable
-from .core.types import UserResponse, Artifact, ExecutionStatus
+from typing import Optional, Callable, Awaitable, Union, cast, List, Dict, Any
 
 
-class InteractiveFlow:
+class UserExitException(BaseException):
+    """Exception raised when user requests to exit."""
+    pass
+
+class RollbackException(BaseException):
+    """Exception raised when user requests to rollback."""
+    pass
+
+class RetryException(BaseException):
+    """Exception raised when user requests to retry."""
+    pass
+
+class InteractionManager:
     """
-    InteractiveFlow 是 AIF 框架的中枢，负责统一处理所有用户交互。
-    - 接收初始用户输入
-    - 在需要时统一向用户提问（避免并发干扰）
-    - 处理用户特殊命令（exit、rollback、retry）
-    - 转发内部 Team/Step 的用户输入需求
+    InteractionManager is the hub for all user interactions.
+    It receives initial input and handles questions from internal Agents/Crews.
+    It processes special user commands (/exit, /rollback, /retry) by raising exceptions
+    that control flow logic can catch.
+    It also maintains conversation history and user context.
     """
 
     def __init__(
         self,
-        input_callback: Callable[[str], Awaitable[str]] | Callable[[str], str],
+        #If you are running on a terminal, input_callback in Python input();
+        #If you are running on a webpage, input_callback in websocket. send().
+        input_callback: Union[Callable[[str], Awaitable[str]], Callable[[str], str]],
         initial_input: Optional[str] = None
     ):
         """
-        :param input_callback: 异步或同步回调函数，用于向用户提问并获取输入
-        :param initial_input: 初始用户输入（可选）
+        :param input_callback: Async or sync callback to ask user and get response.
+        :param initial_input: Optional initial input string.
         """
         self.input_callback = input_callback
         self.initial_input: Optional[str] = initial_input
         self.current_question: Optional[str] = None
+        self.history: List[Dict[str, str]] = []
+        self.context: Dict[str, Any] = {}
 
-    async def get_user_input(self, question: str) -> UserResponse:
+    def add_to_history(self, role: str, content: str):
+        """Add a message to the conversation history."""
+        self.history.append({"role": role, "content": content})
+
+    def get_history(self) -> List[Dict[str, str]]:
+        """Get the full conversation history."""
+        return self.history
+
+    def set_context(self, key: str, value: Any):
+        """Set a value in the user context."""
+        self.context[key] = value
+
+    def get_context(self, key: str) -> Any:
+        """Get a value from the user context."""
+        return self.context.get(key)
+
+    async def get_user_input(self, question: str) -> str:
         """
-        统一向用户提问，并解析响应。
-        支持特殊命令：/exit, /rollback, /retry
+        Ask user a question.
+        Parses commands and raises Control Flow exceptions if needed.
         """
         self.current_question = question
-        raw_input = await self.input_callback(question) if hasattr(self.input_callback, "__await__") else self.input_callback(question)
+        self.add_to_history("system", question)
+        
+        # We try to await if it returns a coroutine, otherwise just use value.
+        # But we can't know before calling.
+        # So we just call it. If it returns awaitable, we await.
+        
+        result = self.input_callback(question)
+        if hasattr(result, "__await__"):
+            raw_input = await cast(Awaitable[str], result)
+        else:
+            raw_input = str(result)
 
-        if raw_input.strip().lower().startswith("/exit"):
-            return UserResponse(content=raw_input, command="exit")
-        if raw_input.strip().lower().startswith("/rollback"):
-            return UserResponse(content=raw_input, command="rollback")
-        if raw_input.strip().lower().startswith("/retry"):
-            return UserResponse(content=raw_input, command="retry")
+        raw_input = raw_input.strip()
+        self.add_to_history("user", raw_input)
+        lower_input = raw_input.lower()
 
-        return UserResponse(content=raw_input, command=None)
+        if lower_input.startswith("/exit"):
+            raise UserExitException("User requested exit")
+        if lower_input.startswith("/rollback"):
+            reason = raw_input[9:].strip() or "User requested rollback"
+            raise RollbackException(reason)
+        if lower_input.startswith("/retry"):
+            feedback = raw_input[6:].strip() or "User requested retry"
+            raise RetryException(feedback)
+
+        return raw_input
 
     async def get_initial_input(self) -> str:
-        """获取初始输入，如果没有则询问"""
+        """Get initial input, ask if missing."""
         if self.initial_input:
             return self.initial_input
-        return await self.get_user_input("请提供初始输入：").content
+        
+        resp = await self.get_user_input("Please provide initial input:")
+        return resp
