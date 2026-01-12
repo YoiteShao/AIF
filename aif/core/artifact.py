@@ -1,23 +1,46 @@
-# aif/core/artifact.py
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel # pyright: ignore[reportMissingImports]
 
 
 class Artifact(BaseModel):
     """
-    Artifact 是 AIF 框架中 Step 和 Team 之间传递的核心数据结构。
-    它封装了输出数据、元数据以及可能的错误信息，确保状态传递的可控性。
+    Artifact is the data carrier between steps.
+    It records the provenance (last_step), destination (next_step),
+    and strictly separates the output of the previous step from the input of the next step.
     """
-    data: Any  # 主要输出数据（str, dict, Pydantic 等）
-    metadata: Dict[str, Any] = {}  # 元数据，如 timestamp、source 等
-    error_reason: Optional[str] = None  # 失败时的错误原因，用于回退时传递
+    # Step Lineage
+    last_step: str = "system"        # The step that just finished
+    next_step: Optional[str] = None  # The step this artifact is destined for
+    
+    # Data Payload
+    last_output: Any = None          # The raw output produced by last_step
+    next_input: Any = None           # The data to be consumed by next_step
+    
+    def _dump_data(self, data: Any) -> str:
+        if data is None:
+            return ""
+        if isinstance(data, (dict, list)):
+            try:
+                return json.dumps(data, ensure_ascii=False)
+            except (TypeError, ValueError):
+                return str(data)
+        return str(data)
 
-    def success(self, data: Any, metadata: Optional[Dict[str, Any]] = None) -> Artifact:
-        """创建成功 Artifact"""
-        return Artifact(data=data, metadata=metadata or {}, error_reason=None)
+    @property
+    def last_output_str(self) -> str:
+        """
+        Safely convert last_output to a string format.
+        Useful for logging or history.
+        """
+        return self._dump_data(self.last_output)
 
-    def failure(self, reason: str, data: Any = None) -> Artifact:
-        """创建失败 Artifact"""
-        return Artifact(data=data, metadata={}, error_reason=reason)
+    @property
+    def pass_to_next_input(self) -> str:
+        """
+        Safely convert next_input to a string format.
+        Useful for passing to the next step (Agent/Task).
+        """
+        return self._dump_data(self.next_input)

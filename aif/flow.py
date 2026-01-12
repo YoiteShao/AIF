@@ -1,75 +1,188 @@
-# aif/flow.py
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Callable, Union, Any
+from crewai import Crew # pyright: ignore[reportMissingImports]
 from .step import Step
-from .core.types import Artifact, ExecutionStatus
-from .interactive import InteractiveFlow
-
+from .core.artifact import Artifact
+from .core.types import RetryValidator
+from .interactive import InteractionManager, UserExitException, RollbackException, RetryException
+from .core.registry import AIFRegistry
 
 class AIFFlow:
     """
-    AIF 主 Flow 类，管理多个 Step 的顺序执行、状态快照、回退。
-    每个 Step 执行成功后保存快照，支持回退到任意前序 Step。
+    AIF Main Flow class.
+    Manages graph-based execution of Steps, state snapshots, and rollback logic.
     """
 
     def __init__(
         self,
-        steps: List[Step],
-        interactive: InteractiveFlow
+        interactive: InteractionManager
     ):
-        self.steps = steps
         self.interactive = interactive
-        self.history: List[Artifact] = []  # 每个 Step 成功后的输出快照
-        self.current_step_index: int = -1
+        self.history: List[Artifact] = []  # Stores output of each successful step
+        self._rollback_reason: Optional[str] = None
+        
+        self.step_map: Dict[str, Step] = {}
+        self._steps_sequence: List[str] = [] # Track order for implicit next_step
+        self.start_step: Optional[str] = None
+
+    def add_step(
+        self,
+        name: str,
+        step_object: Union[Crew, Callable],
+        max_iterations: int = 3,
+        retry_check_callback: Optional[RetryValidator] = None,
+        next_step: Union[str, Any] = None,
+        require_user_confirmation: bool = True
+    ) -> Step:
+        """
+        Register a Step (wrapping a Crew or Callable) in this Flow.
+        Unified registration method:
+        - Creates a Step object with specified parameters.
+        - Adds it to the Flow sequence.
+        - Implicitly sets the first added step as the start_step if not set.
+        """
+        step = Step(
+            name=name,
+            step_object=step_object,
+            max_iterations=max_iterations,
+            retry_check_callback=retry_check_callback,
+            next_step=next_step,
+            require_user_confirmation=require_user_confirmation
+        )
+        self._add_step_internal(step)
+        return step
+
+    def _add_step_internal(self, step: Step):
+        if step.name in self.step_map:
+             raise ValueError(f"Step '{step.name}' already exists in Flow.")
+        self.step_map[step.name] = step
+        self._steps_sequence.append(step.name)
+        
+        # If this is the first step added and no start_step defined, set it
+        if self.start_step is None:
+            self.start_step = step.name
+
+    def inspect(self):
+        """View the complete step flow structure."""
+        print("\n=== Flow Configuration ===")
+        print(f"Start Step: {self.start_step}")
+        print("Steps Sequence:")
+        for i, name in enumerate(self._steps_sequence):
+            step = self.step_map[name]
+            next_s = step.next_step
+            if next_s is None and i + 1 < len(self._steps_sequence):
+                next_s = f"{self._steps_sequence[i+1]} (Implicit)"
+            elif next_s is None:
+                next_s = "End"
+            
+            print(f"  {i+1}. [{name}] -> {next_s}")
+            print(f"     Max Iter: {step.max_iterations}, Confirm: {step.require_user_confirmation}")
+        print("==========================\n")
 
     async def run(self) -> Artifact:
         """
-        运行整个 Flow。
-        - 从当前 step 开始执行
-        - 支持回退、用户交互、退出
+        Execute the Flow.
+        Iterates through steps based on graph logic. Handles Rollback/Exit requests.
         """
         initial_input = await self.interactive.get_initial_input()
-        current_artifact = Artifact.success(initial_input)
+        current_artifact = Artifact(
+            last_step="User Input",
+            last_output=initial_input,
+            next_input=initial_input
+        )
+        
+        current_step_name = self.start_step
+        if not current_step_name:
+             raise ValueError("Flow cannot start: No start_step defined and no steps provided.")
 
-        while self.current_step_index < len(self.steps) - 1:
-            self.current_step_index += 1
-            step = self.steps[self.current_step_index]
-
+        while current_step_name:
+            step = self._get_step(current_step_name)
+            
+            # Determine previous error context if we rolled back to here
             previous_error = None
-            if len(self.history) > self.current_step_index:
-                # 回退后重置
-                previous_error = self.history[self.current_step_index].error_reason
+            if self._rollback_reason:
+                previous_error = self._rollback_reason
+                self._rollback_reason = None
 
-            status, output_artifact = await step.execute(
-                current_artifact, self.interactive, previous_error
-            )
+            print(f"==============[{step.name}]==============")
 
-            if status == ExecutionStatus.SUCCESS:
+            current_artifact.next_step = step.name
+
+            try:
+                # Execute step (handles retry loops internally)
+                output_artifact = await step.execute(
+                    input_artifact=current_artifact, interactive=self.interactive, previous_error=previous_error
+                )
+                
                 self.history.append(output_artifact)
                 current_artifact = output_artifact
-                continue
+                
+                # Determine Next Step
+                next_step_val = step.next_step
+                current_step_name = None
+                
+                if next_step_val is not None:
+                    # Explicit next_step takes precedence
+                    if isinstance(next_step_val, str):
+                        current_step_name = next_step_val
+                    elif callable(next_step_val):
+                        current_step_name = next_step_val(output_artifact)
+                    else:
+                        print(f"[AIF] Warning: Invalid next_step type in step {step.name}. Ending flow.")
+                else:
+                    # Implicit next step from sequence
+                    try:
+                        # Find index of current step in the sequence
+                        current_idx = self._steps_sequence.index(step.name)
+                        if current_idx + 1 < len(self._steps_sequence):
+                            current_step_name = self._steps_sequence[current_idx + 1]
+                    except ValueError:
+                         # Current step not in sequence list (shouldn't happen if initialized correctly)
+                         pass
 
-            elif status == ExecutionStatus.USER_INPUT_REQUIRED:
-                # 处理用户输入后重试当前 step
-                self.current_step_index -= 1  # 临时回退以重试
-                continue
+            except UserExitException:
+                print("[AIF] Flow exited by user.")
+                return current_artifact
 
-            elif status == ExecutionStatus.ROLLBACK_REQUESTED:
-                if self.current_step_index == 0:
-                    raise ValueError("无法回退到更前一步")
-                # 回退到上一步，重置当前
-                self.current_step_index -= 2  # 执行上一步时会 +1
-                current_artifact = self.history[self.current_step_index] if self.current_step_index >= 0 else Artifact.success(
-                    initial_input)
-                continue
+            except RollbackException as e:
+                reason = str(e.args[0]) if e.args else "User requested rollback"
+                print(f"[AIF] Rolling back... Reason: {reason}")
+                
+                if not self.history:
+                    print("[AIF] Cannot rollback beyond the first step. Restarting current step.")
+                    self._rollback_reason = reason
+                else:
+                    # Rollback to previous step
+                    popped_artifact = self.history.pop()
+                    step_to_retry = popped_artifact.last_step
+                    
+                    print(f"[AIF] Rolling back to step: {step_to_retry}")
+                    current_step_name = step_to_retry
+                    
+                    # Restore input for that step
+                    if self.history:
+                        current_artifact = self.history[-1]
+                    else:
+                         current_artifact = Artifact(
+                            last_step="User Input",
+                            last_output=initial_input,
+                            next_input=initial_input
+                        )
+                    self._rollback_reason = reason
 
-            elif status == ExecutionStatus.EXIT_REQUESTED:
-                return Artifact.failure("用户退出 Flow")
+            except Exception as e:
+                # Unexpected error outside step loop (or propagated)
+                print(f"[AIF] Critical Error in Flow: {e}")
+                raise e
 
-            else:
-                # 失败处理
-                raise RuntimeError(
-                    f"Step {step.name} 失败: {output_artifact.error_reason}")
+        return current_artifact
 
-        return current_artifact  # 最终输出
+    def _get_step(self, name: str) -> Step:
+        """Resolve step by name from local map or Registry."""
+        if name in self.step_map:
+            return self.step_map[name]
+        try:
+            return AIFRegistry.get_step(name)
+        except ValueError:
+            raise ValueError(f"Step '{name}' not found in Flow configuration or Registry.")
