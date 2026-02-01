@@ -3,6 +3,20 @@ from __future__ import annotations
 from typing import Optional, Callable, Awaitable, Union, cast, List, Dict, Any
 
 
+async def console_input(question: str) -> str:
+    """
+    Default interactive console input with formatting.
+    This is a reference implementation for CLI-based interaction.
+    
+    Usage:
+        manager = InteractionManager(input_callback=console_input)
+    """
+    print(f"\n💬 [User Input Required]")
+    print(f"   {question}")
+    user_input = input("   👤 > ")
+    return user_input
+
+
 class UserExitException(BaseException):
     """Exception raised when user requests to exit."""
     pass
