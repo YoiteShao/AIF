@@ -10,16 +10,17 @@ While CrewAI provides excellent multi-agent orchestration, AIF focuses on bridgi
 
 ---
 
-## 🌟 Why AIF?
+qua## 🌟 Why AIF?
 
-| Feature | Standard CrewAI Flows | AIF Advantages |
-| :--- | :--- | :--- |
+
+| Feature         | Standard CrewAI Flows                        | AIF Advantages                                                                                                                                            |
+| :-------------- | :------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Interaction** | Decentralized input, lack of unified control | **InteractionManager Hub**: Centralized management of user inputs supporting commands like `/exit`, `/rollback`, `/retry`, preventing concurrency issues. |
-| **Recovery** | Relies on manual restarts or custom logic | **Auto-Correction & Rollback**: Built-in "Generate-Validate-Retry" loop. Supports state rollback with context, allowing users to fix mistakes easily. |
-| **State** | Global state, prone to pollution | **Artifact-Oriented**: Data is strictly passed via Artifacts, isolating inputs/outputs between steps to prevent prompt leakage. |
-| **HITL** | Requires custom implementation | **Native HITL Support**: Agents can actively ask users for help via `AskUserTool`; Users can intervene at any step via feedback or commands. |
-| **Validation** | Manual implementation required | **Flexible Validators**: Support function, Agent, or Crew-based validation with intelligent retry logic. |
-| **Debug** | Limited visibility | **Built-in Debug Mode**: Track artifact transmission and step execution with detailed logging. |
+| **Recovery**    | Relies on manual restarts or custom logic    | **Auto-Correction & Rollback**: Built-in "Generate-Validate-Retry" loop. Supports state rollback with context, allowing users to fix mistakes easily.     |
+| **State**       | Global state, prone to pollution             | **Artifact-Oriented**: Data is strictly passed via Artifacts, isolating inputs/outputs between steps to prevent prompt leakage.                           |
+| **HITL**        | Requires custom implementation               | **Native HITL Support**: Agents can actively ask users for help via `AskUserTool`; Users can intervene at any step via feedback or commands.              |
+| **Validation**  | Manual implementation required               | **Flexible Validators**: Support function, Agent, or Crew-based validation with intelligent retry logic.                                                  |
+| **Debug**       | Limited visibility                           | **Built-in Debug Mode**: Track artifact transmission and step execution with detailed logging.                                                            |
 
 ---
 
@@ -29,28 +30,28 @@ While CrewAI provides excellent multi-agent orchestration, AIF focuses on bridgi
 graph TD
     Start([Start Flow]) --> Init[Initialize Artifact]
     Init --> StepStart{Step Execution}
-    
+  
     subgraph "Step Lifecycle"
         StepStart --> Exec[Run Agent/Crew/Callable]
         Exec --> Validate{Guard Validator}
-        
+    
         Validate -- Fail --> AddValidation[Add to Feedback History]
         AddValidation --> UserInt
-        
+    
         Validate -- Pass --> UserInt{User Confirmation}
-        
+    
         UserInt -- "Yes/Enter" --> NextStep[Create Output Artifact]
         UserInt -- "Feedback" --> AddFeedback[Add to Feedback History]
         AddFeedback --> Exec
         UserInt -- "/rollback" --> Rollback[Restore Previous State]
         UserInt -- "/exit" --> End([End Flow])
     end
-    
+  
     NextStep --> NextStepLogic{Next Step Logic}
     NextStepLogic -- "Explicit next_step" --> StepStart
     NextStepLogic -- "Implicit sequence" --> StepStart
     NextStepLogic -- "End of flow" --> End
-    
+  
     Rollback --> StepStart
 ```
 
@@ -72,8 +73,9 @@ class Artifact(BaseModel):
 ```
 
 **Key Features:**
+
 - **Type Preservation**: Supports `str`, `dict`, and `list` data types natively
-- **Data Access**: 
+- **Data Access**:
   - `get_data(key=None)`: Get data in original format
   - `get_data_as_str()`: Get string representation for LLM input
 - **Lineage Tracking**: Records data flow through `last_step` and `next_step`
@@ -94,6 +96,7 @@ step = Step(
 ```
 
 **Key Features:**
+
 - **Flexible Execution**: Supports both `Crew` and Python `Callable`
 - **Output Processing**: Separate display message from pass data via `output_processor`
 - **Automatic Retry**: Built-in retry loop with cumulative feedback context
@@ -104,6 +107,7 @@ step = Step(
   3. **Crew**: Multiple agents for complex validation
 
 **Step as Next Step:**
+
 ```python
 # Steps can be used directly as next_step parameter
 search_step = flow.add_step(Step(name="search", ...))
@@ -138,12 +142,14 @@ result = await flow.run(initial_input="task description")
 ```
 
 **Key Features:**
+
 - **Graph-Based Execution**: Supports explicit and implicit step sequencing
 - **State Management**: Maintains history stack for rollback
 - **Exception Handling**: Catches and processes control flow exceptions
 - **Flexible Next Step**: Supports string, Step object, or callable for dynamic routing
 
 **Next Step Logic:**
+
 ```python
 # 1. String: Direct step name
 next_step="step2"
@@ -185,6 +191,7 @@ manager = InteractionManager(input_callback=websocket_input)
 ```
 
 **Key Features:**
+
 - **Command Parsing**: Automatically handles `/exit`, `/rollback`, `/retry`
 - **History Tracking**: Maintains conversation history via `add_to_history()`
 - **Context Management**: Store/retrieve user context with `set_context()` / `get_context()`
@@ -298,10 +305,10 @@ def process_output(raw_result):
     """
     # Extract structured data
     data = extract_json(raw_result)
-    
+  
     # Create user-friendly message
     msg = f"✓ Generated config with {len(data)} fields"
-    
+  
     return (msg, data)  # data keeps dict type
 
 flow.add_step_from_crew(
@@ -319,13 +326,14 @@ flow.add_step_from_crew(
 
 At any confirmation prompt, users can:
 
-| Command | Action | Example |
-|---------|--------|---------|
-| **Enter** or **yes** | Approve and continue | `[Press Enter]` |
-| **Direct feedback** | Retry with feedback | `Add more details to the description` |
-| **/retry [feedback]** | Explicit retry | `/retry Fix the JSON format` |
-| **/rollback [reason]** | Rollback to previous step | `/rollback Wrong model selected` |
-| **/exit** | Terminate flow | `/exit` |
+
+| Command                | Action                    | Example                               |
+| ---------------------- | ------------------------- | ------------------------------------- |
+| **Enter** or **yes**   | Approve and continue      | `[Press Enter]`                       |
+| **Direct feedback**    | Retry with feedback       | `Add more details to the description` |
+| **/retry [feedback]**  | Explicit retry            | `/retry Fix the JSON format`          |
+| **/rollback [reason]** | Rollback to previous step | `/rollback Wrong model selected`      |
+| **/exit**              | Terminate flow            | `/exit`                               |
 
 ### AskUserTool
 
@@ -412,6 +420,7 @@ flow.add_step_from_crew(
 ```
 
 The validator returns structured feedback:
+
 ```json
 {
     "should_retry": true,
@@ -446,6 +455,7 @@ aif_config.enable_debug_step(True)
 ```
 
 Debug output example:
+
 ```
       ---------------
       🔍 [Debug] Artifact [Before search] start
@@ -532,8 +542,8 @@ aif/
 ├── tools.py             # AskUserTool implementation
 └── validators.py        # Agent/Crew-based validators
 
-qualcomm_example/        # Example implementation
-├── qgenie.py           # Main entry point
+example/        # Example implementation
+├── main.py           # Main entry point
 ├── agents.yaml         # Agent configurations
 ├── tasks.yaml          # Task definitions
 ├── steps/              # Step implementations
@@ -547,25 +557,30 @@ qualcomm_example/        # Example implementation
 ## 🎯 Best Practices
 
 ### 1. Step Design
+
 - **Single Responsibility**: Each step should have one clear purpose
 - **Idempotent**: Steps should be safe to retry
 - **Clear Output**: Use `output_processor` to separate display from data
 
 ### 2. Validation
+
 - **Function Validators**: For simple format/syntax checks
 - **Agent Validators**: For semantic/quality validation
 - **Crew Validators**: For complex multi-aspect validation
 
 ### 3. User Confirmation
+
 - **Auto-approve** (`require_user_confirmation=False`): For deterministic steps
 - **Require confirmation**: For critical decisions or final outputs
 
 ### 4. Error Handling
+
 - **Validation Errors**: Use guard callbacks for automatic retry
 - **User Feedback**: Let users provide context for better retry
 - **Rollback**: For correcting earlier mistakes
 
 ### 5. Debug Mode
+
 - Enable during development for visibility
 - Disable in production for cleaner output
 
@@ -573,15 +588,16 @@ qualcomm_example/        # Example implementation
 
 ## 🔄 Comparison with CrewAI Flows
 
-| Aspect | CrewAI Flows | AIF |
-|--------|--------------|-----|
-| **Step Definition** | `@start()`, `@listen()` decorators | Explicit `Step` objects with configuration |
-| **State Management** | Shared state across flow | Isolated `Artifact` per step |
-| **User Interaction** | Manual implementation | Built-in `InteractionManager` |
-| **Retry Logic** | Manual implementation | Automatic with feedback context |
-| **Validation** | Manual checks | Function/Agent/Crew validators |
-| **Rollback** | Not supported | Built-in state rollback |
-| **Debug** | Limited | Comprehensive debug modes |
+
+| Aspect               | CrewAI Flows                       | AIF                                       |
+| -------------------- | ---------------------------------- | ----------------------------------------- |
+| **Step Definition**  | `@start()`, `@listen()` decorators | Explicit`Step` objects with configuration |
+| **State Management** | Shared state across flow           | Isolated`Artifact` per step               |
+| **User Interaction** | Manual implementation              | Built-in`InteractionManager`              |
+| **Retry Logic**      | Manual implementation              | Automatic with feedback context           |
+| **Validation**       | Manual checks                      | Function/Agent/Crew validators            |
+| **Rollback**         | Not supported                      | Built-in state rollback                   |
+| **Debug**            | Limited                            | Comprehensive debug modes                 |
 
 ---
 
